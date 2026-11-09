@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import * as XLSX from 'xlsx';
-import jsQR from 'jsqr'; // NEW: Imported the QR scanner
+import jsQR from 'jsqr';
 
 // Supabase Credentials
 const supabaseUrl = 'https://zvljpnbsauvkqsjbxkxq.supabase.co';
@@ -86,7 +86,6 @@ export default function App() {
     }
   };
 
-  // NEW: Helper function to check for QR codes locally
   const scanForQRCode = (file) => {
     return new Promise((resolve) => {
       const reader = new FileReader();
@@ -104,11 +103,8 @@ export default function App() {
             inversionAttempts: "dontInvert",
           });
           
-          if (code) {
-            resolve(code.data);
-          } else {
-            resolve(null);
-          }
+          if (code) resolve(code.data);
+          else resolve(null);
         };
         img.src = event.target.result;
       };
@@ -116,36 +112,47 @@ export default function App() {
     });
   };
 
-  const handleImageCapture = async (event) => {
+  // HANDLES QR CODES ONLY (OFFLINE)
+  const handleQRCapture = async (event) => {
     const file = event.target.files[0];
     if (!file) return;
 
     setIsScanning(true);
     setCurrentText(""); 
+    setStatus("Scanning for QR code...");
     
     try {
-      // 1. Check for QR Code first (Works instantly and Offline)
-      setStatus("Analyzing image for QR code...");
       const qrResult = await scanForQRCode(file);
-      
       if (qrResult) {
         setCurrentText(qrResult);
         setStatus("✅ QR Code detected! Review text below.");
-        setIsScanning(false);
-        event.target.value = null;
-        return; // Stop here, we don't need the OCR API
+      } else {
+        setStatus("❌ No QR code found in this image.");
       }
+    } catch (error) {
+      console.error(error);
+      setStatus("Error reading QR code.");
+    } finally {
+      setIsScanning(false);
+      event.target.value = null;
+    }
+  };
 
-      // 2. If no QR code, fallback to OCR API (Requires Internet)
-      if (!isOnline) {
-        setStatus("No QR code found, and you are offline. OCR text extraction requires internet.");
-        setIsScanning(false);
-        event.target.value = null;
-        return;
-      }
+  // HANDLES METAL OCR TEXT ONLY (REQUIRES INTERNET)
+  const handleTextCapture = async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
 
-      setStatus("No QR found. Uploading to OCR API for text extraction...");
+    if (!isOnline) {
+      setStatus("You are offline. Punched text OCR requires internet.");
+      return;
+    }
 
+    setIsScanning(true);
+    setStatus("Uploading to OCR API for text extraction...");
+    setCurrentText(""); 
+
+    try {
       const formData = new FormData();
       formData.append('apikey', 'helloworld'); 
       formData.append('language', 'eng');
@@ -168,11 +175,11 @@ export default function App() {
         setCurrentText(result.ParsedResults[0].ParsedText);
         setStatus("Review, edit, or select the text below before saving.");
       } else {
-        setStatus("No text or QR detected in the image.");
+        setStatus("No text detected in the image.");
       }
     } catch (error) {
       console.error(error);
-      setStatus("Error during scanning.");
+      setStatus("Network error during scanning.");
     } finally {
       setIsScanning(false);
       event.target.value = null; 
@@ -309,16 +316,24 @@ export default function App() {
           </div>
         </div>
         
-        {/* TWO SPLIT BUTTONS FOR CAMERA AND GALLERY */}
+        {/* === NEW DEDICATED QR BUTTON === */}
+        <div style={{ marginBottom: '10px' }}>
+          <label style={{ width: '100%', backgroundColor: '#00E5FF', color: '#121212', padding: '15px 10px', borderRadius: '8px', display: 'flex', justifyContent: 'center', fontWeight: 'bold', cursor: 'pointer', opacity: isScanning ? 0.7 : 1, textAlign: 'center', boxShadow: '0 4px 6px rgba(0, 229, 255, 0.2)' }}>
+            {isScanning ? "⏳..." : "🔳 Scan QR Code"}
+            <input type="file" accept="image/*" capture="environment" onChange={handleQRCapture} disabled={isScanning} style={{ display: 'none' }} />
+          </label>
+        </div>
+
+        {/* OCR TEXT BUTTONS (CAMERA & GALLERY) */}
         <div style={{ marginBottom: '20px', display: 'flex', gap: '10px' }}>
           <label style={{ flex: 1, backgroundColor: '#00E676', color: '#121212', padding: '15px 10px', borderRadius: '8px', display: 'flex', justifyContent: 'center', fontWeight: 'bold', cursor: 'pointer', opacity: isScanning ? 0.7 : 1, textAlign: 'center', boxShadow: '0 4px 6px rgba(0, 230, 118, 0.2)' }}>
-            {isScanning ? "⏳..." : "📷 Camera"}
-            <input type="file" accept="image/*" capture="environment" onChange={handleImageCapture} disabled={isScanning} style={{ display: 'none' }} />
+            {isScanning ? "⏳..." : "📷 OCR Camera"}
+            <input type="file" accept="image/*" capture="environment" onChange={handleTextCapture} disabled={isScanning} style={{ display: 'none' }} />
           </label>
           
           <label style={{ flex: 1, backgroundColor: '#1e1e1e', color: '#00E676', border: '2px solid #00E676', padding: '15px 10px', borderRadius: '8px', display: 'flex', justifyContent: 'center', fontWeight: 'bold', cursor: 'pointer', opacity: isScanning ? 0.7 : 1, textAlign: 'center' }}>
-            {isScanning ? "⏳..." : "🖼️ Gallery"}
-            <input type="file" accept="image/*" onChange={handleImageCapture} disabled={isScanning} style={{ display: 'none' }} />
+            {isScanning ? "⏳..." : "🖼️ OCR Gallery"}
+            <input type="file" accept="image/*" onChange={handleTextCapture} disabled={isScanning} style={{ display: 'none' }} />
           </label>
         </div>
 
@@ -331,6 +346,7 @@ export default function App() {
           />
         </div>
 
+        {/* ALWAYS VISIBLE BUTTONS */}
         <button onClick={saveCurrentTag} style={{ backgroundColor: 'transparent', color: '#00E676', padding: '12px 20px', borderRadius: '8px', border: '2px solid #00E676', fontWeight: 'bold', width: '100%', marginBottom: '15px', cursor: 'pointer' }}>
           ➕ Save to Cloud
         </button>
@@ -339,6 +355,7 @@ export default function App() {
           💾 Download Local Backup
         </button>
 
+        {/* OFFLINE QUEUE WARNING */}
         {offlineQueue.length > 0 && (
           <div style={{ backgroundColor: '#ff525220', border: '1px solid #ff5252', padding: '15px', borderRadius: '8px', marginBottom: '20px' }}>
             <h4 style={{ color: '#ff5252', margin: '0 0 10px 0' }}>⚠️ Offline Sync Queue</h4>
@@ -352,6 +369,7 @@ export default function App() {
           </div>
         )}
 
+        {/* FOOTER AREA */}
         <div style={{ marginTop: '40px', paddingTop: '20px', borderTop: '1px solid #333', textAlign: 'center', fontSize: '11px', color: '#555', letterSpacing: '0.5px' }}>
           developed by Digital Team, L&T, RIL NMD project
         </div>
