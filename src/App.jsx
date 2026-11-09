@@ -262,10 +262,17 @@ export default function App() {
           </div>
         </div>
         
-        {/* SCANNER VIEW */}
-        <div style={{ marginBottom: '20px' }}>
-          <label style={{ backgroundColor: '#00E676', color: '#121212', padding: '15px 20px', borderRadius: '8px', display: 'flex', justifyContent: 'center', fontWeight: 'bold', cursor: 'pointer', opacity: isScanning ? 0.7 : 1, boxShadow: '0 4px 6px rgba(0, 230, 118, 0.2)' }}>
-            {isScanning ? "⏳ Processing Image..." : "📷 Open Camera / Gallery"}
+        {/* TWO SPLIT BUTTONS FOR CAMERA AND GALLERY */}
+        <div style={{ marginBottom: '20px', display: 'flex', gap: '10px' }}>
+          {/* CAMERA BUTTON (Forced to open environment camera) */}
+          <label style={{ flex: 1, backgroundColor: '#00E676', color: '#121212', padding: '15px 10px', borderRadius: '8px', display: 'flex', justifyContent: 'center', fontWeight: 'bold', cursor: 'pointer', opacity: isScanning ? 0.7 : 1, textAlign: 'center', boxShadow: '0 4px 6px rgba(0, 230, 118, 0.2)' }}>
+            {isScanning ? "⏳..." : "📷 Camera"}
+            <input type="file" accept="image/*" capture="environment" onChange={handleImageCapture} disabled={isScanning} style={{ display: 'none' }} />
+          </label>
+          
+          {/* GALLERY BUTTON (Standard file picker) */}
+          <label style={{ flex: 1, backgroundColor: '#1e1e1e', color: '#00E676', border: '2px solid #00E676', padding: '15px 10px', borderRadius: '8px', display: 'flex', justifyContent: 'center', fontWeight: 'bold', cursor: 'pointer', opacity: isScanning ? 0.7 : 1, textAlign: 'center' }}>
+            {isScanning ? "⏳..." : "🖼️ Gallery"}
             <input type="file" accept="image/*" onChange={handleImageCapture} disabled={isScanning} style={{ display: 'none' }} />
           </label>
         </div>
