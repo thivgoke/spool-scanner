@@ -1,11 +1,19 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import * as XLSX from 'xlsx';
 
 export default function App() {
-  const [scannedTags, setScannedTags] = useState([]);
+  const [scannedTags, setScannedTags] = useState(() => {
+    const saved = localStorage.getItem('lnt_spool_tags');
+    return saved ? JSON.parse(saved) : [];
+  });
+  
   const [isScanning, setIsScanning] = useState(false);
   const [status, setStatus] = useState("Ready to scan");
-  const [currentText, setCurrentText] = useState(""); // Holds raw text for user editing
+  const [currentText, setCurrentText] = useState("");
+
+  useEffect(() => {
+    localStorage.setItem('lnt_spool_tags', JSON.stringify(scannedTags));
+  }, [scannedTags]);
 
   const handleImageCapture = async (event) => {
     const file = event.target.files[0];
@@ -13,7 +21,7 @@ export default function App() {
 
     setIsScanning(true);
     setStatus("Uploading to OCR API...");
-    setCurrentText(""); // Clear previous text
+    setCurrentText(""); 
 
     try {
       const formData = new FormData();
@@ -35,7 +43,6 @@ export default function App() {
       }
 
       if (result.ParsedResults && result.ParsedResults.length > 0) {
-        // Output ALL extracted text to the state instead of filtering with Regex
         setCurrentText(result.ParsedResults[0].ParsedText);
         setStatus("Review, edit, or select the text below before saving.");
       } else {
@@ -46,7 +53,6 @@ export default function App() {
       setStatus("Network error during scanning.");
     } finally {
       setIsScanning(false);
-      // Reset file input so you can scan the same image again if needed
       event.target.value = null; 
     }
   };
@@ -60,7 +66,7 @@ export default function App() {
     setScannedTags(prev => [...prev, {
       id: Date.now().toString(),
       data: currentText.trim(),
-      timestamp: new Date().toLocaleString()
+      timestamp: new Date().toLocaleString() 
     }]);
     
     setCurrentText("");
@@ -69,10 +75,24 @@ export default function App() {
 
   const exportToExcel = () => {
     if (scannedTags.length === 0) return;
-    const worksheet = XLSX.utils.json_to_sheet(scannedTags);
+    
+    const excelData = scannedTags.map(tag => ({
+      "Scanned Text": tag.data,
+      "Date & Time": tag.timestamp
+    }));
+
+    const worksheet = XLSX.utils.json_to_sheet(excelData);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, "SpoolTags");
     XLSX.writeFile(workbook, `Spool_Export_${Date.now()}.xlsx`);
+  };
+
+  const clearList = () => {
+    if (window.confirm("Are you sure you want to clear all saved tags? Make sure you exported them first!")) {
+      setScannedTags([]);
+      setCurrentText("");
+      setStatus("List cleared.");
+    }
   };
 
   return (
@@ -82,16 +102,55 @@ export default function App() {
       minHeight: '100vh', 
       padding: '20px', 
       fontFamily: 'system-ui',
-      boxSizing: 'border-box'
+      boxSizing: 'border-box',
+      display: 'flex',
+      flexDirection: 'column'
     }}>
-      <div style={{ maxWidth: '600px', margin: '0 auto' }}>
+      <div style={{ maxWidth: '600px', margin: '0 auto', flex: 1, width: '100%' }}>
         
-        <h2 style={{ color: '#00E676', borderBottom: '1px solid #333', paddingBottom: '10px' }}>
-          L&T Spool Scanner
-        </h2>
+        {/* HEADER AREA */}
+        <div style={{ 
+          borderBottom: '1px solid #333', 
+          paddingBottom: '15px', 
+          display: 'flex', 
+          justifyContent: 'space-between', 
+          alignItems: 'center',
+          marginBottom: '20px'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            {/* INLINE SVG LOGO (Scanner / Crop Icon) */}
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="url(#silver-grad)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <defs>
+                <linearGradient id="silver-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stopColor="#ffffff" />
+                  <stop offset="50%" stopColor="#b8c6db" />
+                  <stop offset="100%" stopColor="#757f9a" />
+                </linearGradient>
+              </defs>
+              <path d="M4 7V4h3M17 4h3v3M4 17v3h3M17 20h3v-3M9 9h6v6H9z" />
+            </svg>
+            
+            {/* SILVER GRADIENT STYLISH TEXT */}
+            <h2 style={{ 
+              margin: 0,
+              background: 'linear-gradient(135deg, #ffffff 0%, #b8c6db 50%, #757f9a 100%)',
+              WebkitBackgroundClip: 'text',
+              WebkitTextFillColor: 'transparent',
+              fontWeight: '900',
+              letterSpacing: '0.5px'
+            }}>
+              Spool Scanner
+            </h2>
+          </div>
+
+          {scannedTags.length > 0 && (
+            <button onClick={clearList} style={{ backgroundColor: 'transparent', color: '#ff5252', border: '1px solid #ff5252', borderRadius: '4px', padding: '6px 12px', fontSize: '13px', cursor: 'pointer', fontWeight: 'bold' }}>
+              Clear
+            </button>
+          )}
+        </div>
         
-        {/* CAMERA BUTTON */}
-        <div style={{ marginBottom: '20px', marginTop: '20px' }}>
+        <div style={{ marginBottom: '20px' }}>
           <label style={{
             backgroundColor: '#00E676', color: '#121212', padding: '15px 20px',
             borderRadius: '8px', display: 'flex', justifyContent: 'center', 
@@ -102,7 +161,6 @@ export default function App() {
             <input 
               type="file" 
               accept="image/*" 
-              capture="environment" 
               onChange={handleImageCapture} 
               disabled={isScanning}
               style={{ display: 'none' }} 
@@ -114,7 +172,6 @@ export default function App() {
           {status}
         </p>
 
-        {/* EDITABLE TEXT AREA (Shows all OCR text) */}
         <div style={{ marginBottom: '20px' }}>
           <textarea 
             value={currentText}
@@ -129,7 +186,6 @@ export default function App() {
           />
         </div>
 
-        {/* SAVE TO LIST BUTTON */}
         <button 
           onClick={saveCurrentTag}
           style={{
@@ -141,7 +197,6 @@ export default function App() {
           ➕ Save Text to List
         </button>
 
-        {/* EXPORT BUTTON */}
         <button 
           onClick={exportToExcel}
           disabled={scannedTags.length === 0}
@@ -156,11 +211,10 @@ export default function App() {
           📊 Export List to Excel
         </button>
 
-        {/* SCANNED TAGS LIST */}
         <div>
-          <h3 style={{ color: '#00E676' }}>Saved Tags ({scannedTags.length})</h3>
+          <h3 style={{ color: '#00E676', fontSize: '1.1em' }}>Saved Tags ({scannedTags.length})</h3>
           {scannedTags.length === 0 ? (
-            <p style={{ color: '#555' }}>No tags saved yet.</p>
+            <p style={{ color: '#555', fontSize: '0.9em' }}>No tags saved yet.</p>
           ) : (
             scannedTags.map(tag => (
               <div key={tag.id} style={{ 
@@ -168,8 +222,7 @@ export default function App() {
                 borderLeft: '4px solid #00E676', borderRadius: '4px',
                 marginBottom: '10px' 
               }}>
-                {/* white-space: pre-wrap preserves multiple lines if the user saved a block of text */}
-                <strong style={{ fontSize: '1.1em', color: '#e0e0e0', whiteSpace: 'pre-wrap' }}>
+                <strong style={{ fontSize: '1.05em', color: '#e0e0e0', whiteSpace: 'pre-wrap' }}>
                   {tag.data}
                 </strong>
                 <br/>
@@ -179,6 +232,19 @@ export default function App() {
               </div>
             ))
           )}
+        </div>
+
+        {/* FOOTER AREA */}
+        <div style={{ 
+          marginTop: '40px', 
+          paddingTop: '20px', 
+          borderTop: '1px solid #333', 
+          textAlign: 'center', 
+          fontSize: '11px', 
+          color: '#555',
+          letterSpacing: '0.5px'
+        }}>
+          developed by Digital Team, L&T, RIL NMD project
         </div>
         
       </div>
