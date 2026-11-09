@@ -1,23 +1,98 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { createClient } from '@supabase/supabase-js';
 import * as XLSX from 'xlsx';
 
+// Supabase Credentials
+const supabaseUrl = 'https://zvljpnbsauvkqsjbxkxq.supabase.co';
+const supabaseKey = 'sb_publishable_joegtDp0U4si45-ASrrWVA_puVDj238';
+const supabase = createClient(supabaseUrl, supabaseKey);
+
 export default function App() {
-  const [scannedTags, setScannedTags] = useState(() => {
-    const saved = localStorage.getItem('lnt_spool_tags');
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const menuRef = useRef(null);
+  
+  const [offlineQueue, setOfflineQueue] = useState(() => {
+    const saved = localStorage.getItem('lnt_offline_queue');
     return saved ? JSON.parse(saved) : [];
   });
   
   const [isScanning, setIsScanning] = useState(false);
   const [status, setStatus] = useState("Ready to scan");
   const [currentText, setCurrentText] = useState("");
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
 
   useEffect(() => {
-    localStorage.setItem('lnt_spool_tags', JSON.stringify(scannedTags));
-  }, [scannedTags]);
+    const handleOnline = () => {
+      setIsOnline(true);
+      syncOfflineData();
+    };
+    const handleOffline = () => setIsOnline(false);
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    
+    const handleClickOutside = (event) => {
+      if (menuRef.current && !menuRef.current.contains(event.target)) {
+        setIsMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [offlineQueue]);
+
+  useEffect(() => {
+    localStorage.setItem('lnt_offline_queue', JSON.stringify(offlineQueue));
+  }, [offlineQueue]);
+
+  // Helper to fetch GPS Coordinates
+  const getLocation = () => {
+    return new Promise((resolve) => {
+      if (!navigator.geolocation) {
+        resolve("Geolocation not supported");
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(
+        (position) => resolve(`${position.coords.latitude.toFixed(5)}, ${position.coords.longitude.toFixed(5)}`),
+        (error) => resolve("Location access denied")
+      );
+    });
+  };
+
+  const syncOfflineData = async () => {
+    if (offlineQueue.length === 0) return;
+    setStatus("Syncing offline data to cloud...");
+    
+    try {
+      const { error } = await supabase
+        .from('spool_data')
+        .insert(offlineQueue.map(tag => ({
+          scanned_text: tag.data,
+          location: tag.location,
+          created_at: tag.timestamp
+        })));
+
+      if (!error) {
+        setOfflineQueue([]);
+        setStatus("All offline data synced successfully.");
+      }
+    } catch (err) {
+      console.error("Sync failed:", err);
+    }
+  };
 
   const handleImageCapture = async (event) => {
     const file = event.target.files[0];
     if (!file) return;
+
+    if (!isOnline) {
+      setStatus("You are offline. OCR requires internet to process images.");
+      return;
+    }
 
     setIsScanning(true);
     setStatus("Uploading to OCR API...");
@@ -57,68 +132,103 @@ export default function App() {
     }
   };
 
-  const saveCurrentTag = () => {
+  const saveCurrentTag = async () => {
     if (!currentText.trim()) {
-      setStatus("Text box is empty. Scan an image first.");
+      setStatus("Text box is empty.");
       return;
     }
     
-    setScannedTags(prev => [...prev, {
-      id: Date.now().toString(),
+    setStatus("Getting GPS location...");
+    const coords = await getLocation();
+    
+    const newTag = {
       data: currentText.trim(),
-      timestamp: new Date().toLocaleString() 
-    }]);
+      location: coords,
+      timestamp: new Date().toISOString()
+    };
+
+    if (isOnline) {
+      setStatus("Saving to cloud database...");
+      const { error } = await supabase
+        .from('spool_data')
+        .insert([{ scanned_text: newTag.data, location: newTag.location, created_at: newTag.timestamp }]);
+        
+      if (error) {
+        setOfflineQueue(prev => [...prev, newTag]);
+        setStatus("Cloud save failed. Saved to offline queue.");
+      } else {
+        setStatus("Successfully saved to cloud.");
+      }
+    } else {
+      setOfflineQueue(prev => [...prev, newTag]);
+      setStatus("Saved offline. Will sync when internet returns.");
+    }
     
     setCurrentText("");
-    setStatus("Successfully added to list.");
   };
 
-  const exportToExcel = () => {
-    if (scannedTags.length === 0) return;
+  // Export 1: Download Only the Local Un-synced Cache
+  const exportLocalQueueToExcel = () => {
+    setIsMenuOpen(false);
+    if (offlineQueue.length === 0) {
+      setStatus("Local queue is empty. Nothing to export.");
+      return;
+    }
     
-    const excelData = scannedTags.map(tag => ({
+    const excelData = offlineQueue.map(tag => ({
       "Scanned Text": tag.data,
-      "Date & Time": tag.timestamp
+      "Location Coordinates": tag.location || "N/A",
+      "Date & Time": new Date(tag.timestamp).toLocaleString()
     }));
 
     const worksheet = XLSX.utils.json_to_sheet(excelData);
     const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "SpoolTags");
-    XLSX.writeFile(workbook, `Spool_Export_${Date.now()}.xlsx`);
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Local_Queue_Backup");
+    XLSX.writeFile(workbook, `Spool_LocalBackup_${Date.now()}.xlsx`);
+    setStatus("Local backup downloaded.");
   };
 
-  const clearList = () => {
-    if (window.confirm("Are you sure you want to clear all saved tags? Make sure you exported them first!")) {
-      setScannedTags([]);
-      setCurrentText("");
-      setStatus("List cleared.");
+  // Export 2: Download the Entire Database from Supabase
+  const downloadOverallReport = async () => {
+    setIsMenuOpen(false);
+    setStatus("Fetching overall report from cloud...");
+    
+    if (!isOnline) {
+      setStatus("Cannot download overall report while offline.");
+      return;
     }
+
+    const { data, error } = await supabase
+      .from('spool_data')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error || !data || data.length === 0) {
+      setStatus("Failed to fetch report or database is empty.");
+      return;
+    }
+
+    const excelData = data.map(tag => ({
+      "Scanned Text": tag.scanned_text,
+      "Location Coordinates": tag.location || "N/A",
+      "Date & Time": new Date(tag.created_at).toLocaleString()
+    }));
+
+    const worksheet = XLSX.utils.json_to_sheet(excelData);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Overall_Report");
+    XLSX.writeFile(workbook, `LNT_Overall_Spool_Report_${Date.now()}.xlsx`);
+    
+    setStatus("Overall report downloaded successfully.");
   };
 
   return (
-    <div style={{ 
-      backgroundColor: '#121212', 
-      color: '#e0e0e0', 
-      minHeight: '100vh', 
-      padding: '20px', 
-      fontFamily: 'system-ui',
-      boxSizing: 'border-box',
-      display: 'flex',
-      flexDirection: 'column'
-    }}>
-      <div style={{ maxWidth: '600px', margin: '0 auto', flex: 1, width: '100%' }}>
+    <div style={{ backgroundColor: '#121212', color: '#e0e0e0', minHeight: '100vh', padding: '20px', fontFamily: 'system-ui', boxSizing: 'border-box', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ maxWidth: '600px', margin: '0 auto', flex: 1, width: '100%', position: 'relative' }}>
         
         {/* HEADER AREA */}
-        <div style={{ 
-          borderBottom: '1px solid #333', 
-          paddingBottom: '15px', 
-          display: 'flex', 
-          justifyContent: 'space-between', 
-          alignItems: 'center',
-          marginBottom: '20px'
-        }}>
+        <div style={{ borderBottom: '1px solid #333', paddingBottom: '15px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            {/* INLINE SVG LOGO (Scanner / Crop Icon) */}
             <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="url(#silver-grad)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
               <defs>
                 <linearGradient id="silver-grad" x1="0%" y1="0%" x2="100%" y2="100%">
@@ -129,124 +239,75 @@ export default function App() {
               </defs>
               <path d="M4 7V4h3M17 4h3v3M4 17v3h3M17 20h3v-3M9 9h6v6H9z" />
             </svg>
-            
-            {/* SILVER GRADIENT STYLISH TEXT */}
-            <h2 style={{ 
-              margin: 0,
-              background: 'linear-gradient(135deg, #ffffff 0%, #b8c6db 50%, #757f9a 100%)',
-              WebkitBackgroundClip: 'text',
-              WebkitTextFillColor: 'transparent',
-              fontWeight: '900',
-              letterSpacing: '0.5px'
-            }}>
+            <h2 style={{ margin: 0, background: 'linear-gradient(135deg, #ffffff 0%, #b8c6db 50%, #757f9a 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', fontWeight: '900', letterSpacing: '0.5px' }}>
               Spool Scanner
             </h2>
           </div>
-
-          {scannedTags.length > 0 && (
-            <button onClick={clearList} style={{ backgroundColor: 'transparent', color: '#ff5252', border: '1px solid #ff5252', borderRadius: '4px', padding: '6px 12px', fontSize: '13px', cursor: 'pointer', fontWeight: 'bold' }}>
-              Clear
+          
+          <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }} ref={menuRef}>
+            {/* Status Dot */}
+            <div style={{ width: '10px', height: '10px', borderRadius: '50%', backgroundColor: isOnline ? '#00E676' : '#ff5252', boxShadow: `0 0 8px ${isOnline ? '#00E676' : '#ff5252'}` }} title={isOnline ? "Online" : "Offline"} />
+            
+            {/* Hamburger Menu Icon */}
+            <button onClick={() => setIsMenuOpen(!isMenuOpen)} style={{ background: 'none', border: 'none', color: '#b8c6db', cursor: 'pointer', padding: '5px' }}>
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="3" y1="12" x2="21" y2="12"></line>
+                <line x1="3" y1="6" x2="21" y2="6"></line>
+                <line x1="3" y1="18" x2="21" y2="18"></line>
+              </svg>
             </button>
-          )}
+
+            {/* Dropdown Menu */}
+            {isMenuOpen && (
+              <div style={{ position: 'absolute', top: '50px', right: '0', backgroundColor: '#1e1e1e', border: '1px solid #333', borderRadius: '8px', padding: '10px', boxShadow: '0 4px 12px rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', flexDirection: 'column', gap: '10px', minWidth: '260px' }}>
+                <button onClick={exportLocalQueueToExcel} style={{ backgroundColor: 'transparent', color: '#e0e0e0', border: 'none', padding: '10px', textAlign: 'left', cursor: 'pointer', fontSize: '14px', borderBottom: '1px solid #333' }}>
+                  💾 Download Local Queue Backup
+                </button>
+                <button onClick={downloadOverallReport} style={{ backgroundColor: 'transparent', color: '#00E676', border: 'none', padding: '10px', textAlign: 'left', cursor: 'pointer', fontSize: '14px', fontWeight: 'bold' }}>
+                  📥 Download Overall Cloud Report
+                </button>
+              </div>
+            )}
+          </div>
         </div>
         
+        {/* SCANNER VIEW */}
         <div style={{ marginBottom: '20px' }}>
-          <label style={{
-            backgroundColor: '#00E676', color: '#121212', padding: '15px 20px',
-            borderRadius: '8px', display: 'flex', justifyContent: 'center', 
-            fontWeight: 'bold', cursor: 'pointer', opacity: isScanning ? 0.7 : 1,
-            boxShadow: '0 4px 6px rgba(0, 230, 118, 0.2)'
-          }}>
+          <label style={{ backgroundColor: '#00E676', color: '#121212', padding: '15px 20px', borderRadius: '8px', display: 'flex', justifyContent: 'center', fontWeight: 'bold', cursor: 'pointer', opacity: isScanning ? 0.7 : 1, boxShadow: '0 4px 6px rgba(0, 230, 118, 0.2)' }}>
             {isScanning ? "⏳ Processing Image..." : "📷 Open Camera / Gallery"}
-            <input 
-              type="file" 
-              accept="image/*" 
-              onChange={handleImageCapture} 
-              disabled={isScanning}
-              style={{ display: 'none' }} 
-            />
+            <input type="file" accept="image/*" onChange={handleImageCapture} disabled={isScanning} style={{ display: 'none' }} />
           </label>
         </div>
 
-        <p style={{ color: '#aaa', fontStyle: 'italic', minHeight: '24px', fontSize: '0.9em' }}>
-          {status}
-        </p>
+        <p style={{ color: '#aaa', fontStyle: 'italic', minHeight: '24px', fontSize: '0.9em' }}>{status}</p>
 
         <div style={{ marginBottom: '20px' }}>
           <textarea 
-            value={currentText}
-            onChange={(e) => setCurrentText(e.target.value)}
-            placeholder="Scanned text will appear here. You can edit this before saving..."
-            style={{
-              width: '100%', height: '120px', backgroundColor: '#1e1e1e', 
-              color: '#00E676', border: '1px solid #00E676', borderRadius: '8px', 
-              padding: '12px', boxSizing: 'border-box', fontSize: '16px',
-              outline: 'none', resize: 'vertical'
-            }}
+            value={currentText} onChange={(e) => setCurrentText(e.target.value)} placeholder="Scanned text will appear here. You can edit this before saving..."
+            style={{ width: '100%', height: '120px', backgroundColor: '#1e1e1e', color: '#00E676', border: '1px solid #00E676', borderRadius: '8px', padding: '12px', boxSizing: 'border-box', fontSize: '16px', outline: 'none', resize: 'vertical' }}
           />
         </div>
 
-        <button 
-          onClick={saveCurrentTag}
-          style={{
-            backgroundColor: 'transparent', color: '#00E676', padding: '12px 20px',
-            borderRadius: '8px', border: '2px solid #00E676', fontWeight: 'bold', 
-            width: '100%', marginBottom: '30px', cursor: 'pointer'
-          }}
-        >
-          ➕ Save Text to List
+        <button onClick={saveCurrentTag} style={{ backgroundColor: 'transparent', color: '#00E676', padding: '12px 20px', borderRadius: '8px', border: '2px solid #00E676', fontWeight: 'bold', width: '100%', marginBottom: '30px', cursor: 'pointer' }}>
+          ➕ Save to Cloud
         </button>
 
-        <button 
-          onClick={exportToExcel}
-          disabled={scannedTags.length === 0}
-          style={{
-            backgroundColor: scannedTags.length === 0 ? '#333' : '#00E676', 
-            color: scannedTags.length === 0 ? '#666' : '#121212', padding: '15px 20px',
-            borderRadius: '8px', border: 'none', fontWeight: 'bold', width: '100%', 
-            marginBottom: '20px', cursor: scannedTags.length === 0 ? 'not-allowed' : 'pointer',
-            boxShadow: scannedTags.length === 0 ? 'none' : '0 4px 6px rgba(0, 230, 118, 0.2)'
-          }}
-        >
-          📊 Export List to Excel
-        </button>
-
-        <div>
-          <h3 style={{ color: '#00E676', fontSize: '1.1em' }}>Saved Tags ({scannedTags.length})</h3>
-          {scannedTags.length === 0 ? (
-            <p style={{ color: '#555', fontSize: '0.9em' }}>No tags saved yet.</p>
-          ) : (
-            scannedTags.map(tag => (
-              <div key={tag.id} style={{ 
-                padding: '15px', backgroundColor: '#1e1e1e', 
-                borderLeft: '4px solid #00E676', borderRadius: '4px',
-                marginBottom: '10px' 
-              }}>
-                <strong style={{ fontSize: '1.05em', color: '#e0e0e0', whiteSpace: 'pre-wrap' }}>
-                  {tag.data}
-                </strong>
-                <br/>
-                <small style={{ color: '#777', display: 'block', marginTop: '8px' }}>
-                  {tag.timestamp}
-                </small>
-              </div>
-            ))
-          )}
-        </div>
+        {offlineQueue.length > 0 && (
+          <div style={{ backgroundColor: '#ff525220', border: '1px solid #ff5252', padding: '15px', borderRadius: '8px', marginBottom: '20px' }}>
+            <h4 style={{ color: '#ff5252', margin: '0 0 10px 0' }}>⚠️ Offline Sync Queue</h4>
+            <p style={{ margin: '0 0 10px 0', fontSize: '14px', color: '#e0e0e0' }}>{offlineQueue.length} tag(s) waiting for internet connection.</p>
+            {isOnline && (
+              <button onClick={syncOfflineData} style={{ backgroundColor: '#ff5252', color: 'white', border: 'none', padding: '8px 15px', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold', width: '100%' }}>
+                Sync Now
+              </button>
+            )}
+          </div>
+        )}
 
         {/* FOOTER AREA */}
-        <div style={{ 
-          marginTop: '40px', 
-          paddingTop: '20px', 
-          borderTop: '1px solid #333', 
-          textAlign: 'center', 
-          fontSize: '11px', 
-          color: '#555',
-          letterSpacing: '0.5px'
-        }}>
+        <div style={{ marginTop: '40px', paddingTop: '20px', borderTop: '1px solid #333', textAlign: 'center', fontSize: '11px', color: '#555', letterSpacing: '0.5px' }}>
           developed by Digital Team, L&T, RIL NMD project
         </div>
-        
       </div>
     </div>
   );
