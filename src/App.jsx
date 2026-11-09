@@ -22,10 +22,7 @@ export default function App() {
   const [isOnline, setIsOnline] = useState(navigator.onLine);
 
   useEffect(() => {
-    const handleOnline = () => {
-      setIsOnline(true);
-      syncOfflineData();
-    };
+    const handleOnline = () => setIsOnline(true);
     const handleOffline = () => setIsOnline(false);
 
     window.addEventListener('online', handleOnline);
@@ -43,13 +40,12 @@ export default function App() {
       window.removeEventListener('offline', handleOffline);
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [offlineQueue]);
+  }, []);
 
   useEffect(() => {
     localStorage.setItem('lnt_offline_queue', JSON.stringify(offlineQueue));
   }, [offlineQueue]);
 
-  // Helper to fetch GPS Coordinates
   const getLocation = () => {
     return new Promise((resolve) => {
       if (!navigator.geolocation) {
@@ -72,16 +68,20 @@ export default function App() {
         .from('spool_data')
         .insert(offlineQueue.map(tag => ({
           scanned_text: tag.data,
-          location: tag.location,
+          location: tag.location || "N/A", 
           created_at: tag.timestamp
         })));
 
-      if (!error) {
+      if (error) {
+        console.error("Supabase error:", error);
+        setStatus(`Sync Failed: ${error.message}`);
+      } else {
         setOfflineQueue([]);
         setStatus("All offline data synced successfully.");
       }
     } catch (err) {
       console.error("Sync failed:", err);
+      setStatus("Network error during sync.");
     }
   };
 
@@ -155,7 +155,7 @@ export default function App() {
         
       if (error) {
         setOfflineQueue(prev => [...prev, newTag]);
-        setStatus("Cloud save failed. Saved to offline queue.");
+        setStatus(`Cloud save failed: ${error.message}. Saved to offline queue.`);
       } else {
         setStatus("Successfully saved to cloud.");
       }
@@ -167,11 +167,9 @@ export default function App() {
     setCurrentText("");
   };
 
-  // Export 1: Download Only the Local Un-synced Cache
   const exportLocalQueueToExcel = () => {
-    setIsMenuOpen(false);
     if (offlineQueue.length === 0) {
-      setStatus("Local queue is empty. Nothing to export.");
+      setStatus("Local queue is empty. No backup needed.");
       return;
     }
     
@@ -188,7 +186,6 @@ export default function App() {
     setStatus("Local backup downloaded.");
   };
 
-  // Export 2: Download the Entire Database from Supabase
   const downloadOverallReport = async () => {
     setIsMenuOpen(false);
     setStatus("Fetching overall report from cloud...");
@@ -245,10 +242,8 @@ export default function App() {
           </div>
           
           <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }} ref={menuRef}>
-            {/* Status Dot */}
             <div style={{ width: '10px', height: '10px', borderRadius: '50%', backgroundColor: isOnline ? '#00E676' : '#ff5252', boxShadow: `0 0 8px ${isOnline ? '#00E676' : '#ff5252'}` }} title={isOnline ? "Online" : "Offline"} />
             
-            {/* Hamburger Menu Icon */}
             <button onClick={() => setIsMenuOpen(!isMenuOpen)} style={{ background: 'none', border: 'none', color: '#b8c6db', cursor: 'pointer', padding: '5px' }}>
               <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <line x1="3" y1="12" x2="21" y2="12"></line>
@@ -257,14 +252,10 @@ export default function App() {
               </svg>
             </button>
 
-            {/* Dropdown Menu */}
             {isMenuOpen && (
-              <div style={{ position: 'absolute', top: '50px', right: '0', backgroundColor: '#1e1e1e', border: '1px solid #333', borderRadius: '8px', padding: '10px', boxShadow: '0 4px 12px rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', flexDirection: 'column', gap: '10px', minWidth: '260px' }}>
-                <button onClick={exportLocalQueueToExcel} style={{ backgroundColor: 'transparent', color: '#e0e0e0', border: 'none', padding: '10px', textAlign: 'left', cursor: 'pointer', fontSize: '14px', borderBottom: '1px solid #333' }}>
-                  💾 Download Local Queue Backup
-                </button>
+              <div style={{ position: 'absolute', top: '50px', right: '0', backgroundColor: '#1e1e1e', border: '1px solid #333', borderRadius: '8px', padding: '10px', boxShadow: '0 4px 12px rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', flexDirection: 'column', gap: '10px', minWidth: '240px' }}>
                 <button onClick={downloadOverallReport} style={{ backgroundColor: 'transparent', color: '#00E676', border: 'none', padding: '10px', textAlign: 'left', cursor: 'pointer', fontSize: '14px', fontWeight: 'bold' }}>
-                  📥 Download Overall Cloud Report
+                  📥 Download Cloud Report
                 </button>
               </div>
             )}
@@ -288,17 +279,24 @@ export default function App() {
           />
         </div>
 
-        <button onClick={saveCurrentTag} style={{ backgroundColor: 'transparent', color: '#00E676', padding: '12px 20px', borderRadius: '8px', border: '2px solid #00E676', fontWeight: 'bold', width: '100%', marginBottom: '30px', cursor: 'pointer' }}>
+        {/* ALWAYS VISIBLE BUTTONS */}
+        <button onClick={saveCurrentTag} style={{ backgroundColor: 'transparent', color: '#00E676', padding: '12px 20px', borderRadius: '8px', border: '2px solid #00E676', fontWeight: 'bold', width: '100%', marginBottom: '15px', cursor: 'pointer' }}>
           ➕ Save to Cloud
         </button>
 
+        <button onClick={exportLocalQueueToExcel} style={{ backgroundColor: 'transparent', color: '#b8c6db', padding: '12px 20px', borderRadius: '8px', border: '1px solid #b8c6db', fontWeight: 'bold', width: '100%', marginBottom: '30px', cursor: 'pointer' }}>
+          💾 Download Local Backup
+        </button>
+
+        {/* OFFLINE QUEUE WARNING (Only shows if sync is needed) */}
         {offlineQueue.length > 0 && (
           <div style={{ backgroundColor: '#ff525220', border: '1px solid #ff5252', padding: '15px', borderRadius: '8px', marginBottom: '20px' }}>
             <h4 style={{ color: '#ff5252', margin: '0 0 10px 0' }}>⚠️ Offline Sync Queue</h4>
-            <p style={{ margin: '0 0 10px 0', fontSize: '14px', color: '#e0e0e0' }}>{offlineQueue.length} tag(s) waiting for internet connection.</p>
+            <p style={{ margin: '0 0 15px 0', fontSize: '14px', color: '#e0e0e0' }}>{offlineQueue.length} tag(s) waiting for internet connection.</p>
+            
             {isOnline && (
-              <button onClick={syncOfflineData} style={{ backgroundColor: '#ff5252', color: 'white', border: 'none', padding: '8px 15px', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold', width: '100%' }}>
-                Sync Now
+              <button onClick={syncOfflineData} style={{ backgroundColor: '#ff5252', color: 'white', border: 'none', padding: '10px 15px', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold', width: '100%' }}>
+                🔄 Sync Now
               </button>
             )}
           </div>
