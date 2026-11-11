@@ -52,17 +52,24 @@ export default function App() {
     localStorage.setItem('lnt_offline_queue', JSON.stringify(offlineQueue));
   }, [offlineQueue]);
 
-  // --- LIVE QR SCANNER ENGINE ---
+  // --- OPTIMIZED LIVE QR SCANNER ENGINE ---
   useEffect(() => {
     let animationFrameId;
+    let scanTimeoutId;
 
     if (showLiveQR) {
-      // Request rear camera
-      navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
+      // Added constraints to cap resolution and encourage auto-focus
+      navigator.mediaDevices.getUserMedia({ 
+        video: { 
+          facingMode: "environment",
+          width: { ideal: 1080 },
+          advanced: [{ focusMode: "continuous" }]
+        } 
+      })
         .then(stream => {
           if (!videoRef.current) return;
           videoRef.current.srcObject = stream;
-          videoRef.current.setAttribute("playsinline", true); // Required for iOS Safari
+          videoRef.current.setAttribute("playsinline", true);
           videoRef.current.play();
           
           const scanFrame = () => {
@@ -76,38 +83,44 @@ export default function App() {
               ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
               
               const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-              const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: "dontInvert" });
+              
+              // FIX: "attemptBoth" solves the glare issue on printed paper
+              const code = jsQR(imageData.data, imageData.width, imageData.height, { 
+                inversionAttempts: "attemptBoth" 
+              });
 
               if (code) {
-                // QR FOUND! Stop camera and go back to home page instantly.
                 setCurrentText(code.data);
                 setStatus("✅ QR Code scanned successfully!");
                 setShowLiveQR(false); 
                 return; 
               }
             }
-            animationFrameId = requestAnimationFrame(scanFrame);
+            
+            // FIX: Throttle CPU usage to allow the camera lens to physically auto-focus
+            scanTimeoutId = setTimeout(() => {
+              animationFrameId = requestAnimationFrame(scanFrame);
+            }, 150); 
           };
           
           animationFrameId = requestAnimationFrame(scanFrame);
         })
         .catch(err => {
           console.error(err);
-          setStatus("Camera access denied. Please allow camera permissions in your browser.");
+          setStatus("Camera access denied. Please allow permissions.");
           setShowLiveQR(false);
         });
     }
 
-    // Cleanup function when camera is closed
     return () => {
       if (animationFrameId) cancelAnimationFrame(animationFrameId);
+      if (scanTimeoutId) clearTimeout(scanTimeoutId);
       if (videoRef.current && videoRef.current.srcObject) {
         videoRef.current.srcObject.getTracks().forEach(track => track.stop());
       }
     };
   }, [showLiveQR]);
 
-  // Get GPS
   const getLocation = () => {
     return new Promise((resolve) => {
       if (!navigator.geolocation) {
@@ -121,7 +134,6 @@ export default function App() {
     });
   };
 
-  // Sync Data
   const syncOfflineData = async () => {
     if (offlineQueue.length === 0) return;
     setStatus("Syncing offline data to cloud...");
@@ -145,7 +157,6 @@ export default function App() {
     }
   };
 
-  // HANDLES METAL OCR TEXT ONLY (REQUIRES INTERNET)
   const handleTextCapture = async (event) => {
     const file = event.target.files[0];
     if (!file) return;
@@ -276,34 +287,26 @@ export default function App() {
   return (
     <div style={{ backgroundColor: '#121212', color: '#e0e0e0', minHeight: '100vh', padding: '20px', fontFamily: 'system-ui', boxSizing: 'border-box', display: 'flex', flexDirection: 'column' }}>
       
-      {/* ========================================= */}
-      {/* LIVE FULL-SCREEN QR SCANNER OVERLAY       */}
-      {/* ========================================= */}
+      {/* LIVE QR SCANNER OVERLAY */}
       {showLiveQR && (
         <div style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', backgroundColor: '#000', zIndex: 9999, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
           
-          {/* Top Bar with Close Button */}
           <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', padding: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.6)', boxSizing: 'border-box', zIndex: 10 }}>
             <h3 style={{ margin: 0, color: '#00E5FF' }}>Scan QR Code</h3>
             <button onClick={() => setShowLiveQR(false)} style={{ background: 'none', border: 'none', color: '#ff5252', fontSize: '18px', fontWeight: 'bold', cursor: 'pointer' }}>✖ Close</button>
           </div>
           
-          {/* Live Video Feed */}
           <video ref={videoRef} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
           <canvas ref={canvasRef} style={{ display: 'none' }} />
           
-          {/* Payment App Scanner UI (Darkens rest of screen, highlights center box) */}
           <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: '250px', height: '250px', border: '3px solid #00E5FF', borderRadius: '20px', boxShadow: '0 0 0 4000px rgba(0,0,0,0.65)', pointerEvents: 'none', zIndex: 5 }}></div>
           <p style={{ position: 'absolute', bottom: '15%', color: '#00E5FF', fontWeight: 'bold', zIndex: 10 }}>Align QR Code inside the box</p>
         </div>
       )}
 
-      {/* ========================================= */}
-      {/* MAIN APP HOME SCREEN                        */}
-      {/* ========================================= */}
+      {/* MAIN APP HOME SCREEN */}
       <div style={{ maxWidth: '600px', margin: '0 auto', flex: 1, width: '100%', position: 'relative' }}>
         
-        {/* HEADER AREA */}
         <div style={{ borderBottom: '1px solid #333', paddingBottom: '15px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
             <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="url(#silver-grad)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -342,14 +345,12 @@ export default function App() {
           </div>
         </div>
         
-        {/* === LIVE QR SCANNER BUTTON === */}
         <div style={{ marginBottom: '10px' }}>
           <button onClick={() => setShowLiveQR(true)} style={{ width: '100%', backgroundColor: '#00E5FF', color: '#121212', padding: '15px 10px', borderRadius: '8px', display: 'flex', justifyContent: 'center', fontWeight: 'bold', cursor: 'pointer', border: 'none', fontSize: '16px', boxShadow: '0 4px 6px rgba(0, 229, 255, 0.2)' }}>
             🔳 Live QR Scanner
           </button>
         </div>
 
-        {/* OCR TEXT BUTTONS (CAMERA & GALLERY) */}
         <div style={{ marginBottom: '20px', display: 'flex', gap: '10px' }}>
           <label style={{ flex: 1, backgroundColor: '#00E676', color: '#121212', padding: '15px 10px', borderRadius: '8px', display: 'flex', justifyContent: 'center', fontWeight: 'bold', cursor: 'pointer', opacity: isScanning ? 0.7 : 1, textAlign: 'center', boxShadow: '0 4px 6px rgba(0, 230, 118, 0.2)' }}>
             {isScanning ? "⏳..." : "📷 OCR Camera"}
@@ -371,7 +372,6 @@ export default function App() {
           />
         </div>
 
-        {/* ALWAYS VISIBLE BUTTONS */}
         <button onClick={saveCurrentTag} style={{ backgroundColor: 'transparent', color: '#00E676', padding: '12px 20px', borderRadius: '8px', border: '2px solid #00E676', fontWeight: 'bold', width: '100%', marginBottom: '15px', cursor: 'pointer' }}>
           ➕ Save to Cloud
         </button>
@@ -380,7 +380,6 @@ export default function App() {
           💾 Download Local Backup
         </button>
 
-        {/* OFFLINE QUEUE WARNING */}
         {offlineQueue.length > 0 && (
           <div style={{ backgroundColor: '#ff525220', border: '1px solid #ff5252', padding: '15px', borderRadius: '8px', marginBottom: '20px' }}>
             <h4 style={{ color: '#ff5252', margin: '0 0 10px 0' }}>⚠️ Offline Sync Queue</h4>
