@@ -22,6 +22,12 @@ export default function App() {
   const [currentText, setCurrentText] = useState("");
   const [isOnline, setIsOnline] = useState(navigator.onLine);
 
+  // --- LIVE QR SCANNER STATES & REFS ---
+  const [showLiveQR, setShowLiveQR] = useState(false);
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+
+  // Network Listeners
   useEffect(() => {
     const handleOnline = () => setIsOnline(true);
     const handleOffline = () => setIsOnline(false);
@@ -30,9 +36,7 @@ export default function App() {
     window.addEventListener('offline', handleOffline);
     
     const handleClickOutside = (event) => {
-      if (menuRef.current && !menuRef.current.contains(event.target)) {
-        setIsMenuOpen(false);
-      }
+      if (menuRef.current && !menuRef.current.contains(event.target)) setIsMenuOpen(false);
     };
     document.addEventListener('mousedown', handleClickOutside);
     
@@ -43,10 +47,67 @@ export default function App() {
     };
   }, []);
 
+  // Offline Queue Storage
   useEffect(() => {
     localStorage.setItem('lnt_offline_queue', JSON.stringify(offlineQueue));
   }, [offlineQueue]);
 
+  // --- LIVE QR SCANNER ENGINE ---
+  useEffect(() => {
+    let animationFrameId;
+
+    if (showLiveQR) {
+      // Request rear camera
+      navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
+        .then(stream => {
+          if (!videoRef.current) return;
+          videoRef.current.srcObject = stream;
+          videoRef.current.setAttribute("playsinline", true); // Required for iOS Safari
+          videoRef.current.play();
+          
+          const scanFrame = () => {
+            if (!videoRef.current || !canvasRef.current) return;
+            if (videoRef.current.readyState === videoRef.current.HAVE_ENOUGH_DATA) {
+              const canvas = canvasRef.current;
+              const video = videoRef.current;
+              canvas.width = video.videoWidth;
+              canvas.height = video.videoHeight;
+              const ctx = canvas.getContext("2d", { willReadFrequently: true });
+              ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+              
+              const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+              const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: "dontInvert" });
+
+              if (code) {
+                // QR FOUND! Stop camera and go back to home page instantly.
+                setCurrentText(code.data);
+                setStatus("✅ QR Code scanned successfully!");
+                setShowLiveQR(false); 
+                return; 
+              }
+            }
+            animationFrameId = requestAnimationFrame(scanFrame);
+          };
+          
+          animationFrameId = requestAnimationFrame(scanFrame);
+        })
+        .catch(err => {
+          console.error(err);
+          setStatus("Camera access denied. Please allow camera permissions in your browser.");
+          setShowLiveQR(false);
+        });
+    }
+
+    // Cleanup function when camera is closed
+    return () => {
+      if (animationFrameId) cancelAnimationFrame(animationFrameId);
+      if (videoRef.current && videoRef.current.srcObject) {
+        videoRef.current.srcObject.getTracks().forEach(track => track.stop());
+      }
+    };
+  }, [showLiveQR]);
+
+  // Get GPS
   const getLocation = () => {
     return new Promise((resolve) => {
       if (!navigator.geolocation) {
@@ -60,10 +121,10 @@ export default function App() {
     });
   };
 
+  // Sync Data
   const syncOfflineData = async () => {
     if (offlineQueue.length === 0) return;
     setStatus("Syncing offline data to cloud...");
-    
     try {
       const { error } = await supabase
         .from('spool_data')
@@ -74,67 +135,13 @@ export default function App() {
         })));
 
       if (error) {
-        console.error("Supabase error:", error);
         setStatus(`Sync Failed: ${error.message}`);
       } else {
         setOfflineQueue([]);
         setStatus("All offline data synced successfully.");
       }
     } catch (err) {
-      console.error("Sync failed:", err);
       setStatus("Network error during sync.");
-    }
-  };
-
-  const scanForQRCode = (file) => {
-    return new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const img = new Image();
-        img.onload = () => {
-          const canvas = document.createElement('canvas');
-          const context = canvas.getContext('2d');
-          canvas.width = img.width;
-          canvas.height = img.height;
-          context.drawImage(img, 0, 0, img.width, img.height);
-          
-          const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
-          const code = jsQR(imageData.data, imageData.width, imageData.height, {
-            inversionAttempts: "dontInvert",
-          });
-          
-          if (code) resolve(code.data);
-          else resolve(null);
-        };
-        img.src = event.target.result;
-      };
-      reader.readAsDataURL(file);
-    });
-  };
-
-  // HANDLES QR CODES ONLY (OFFLINE)
-  const handleQRCapture = async (event) => {
-    const file = event.target.files[0];
-    if (!file) return;
-
-    setIsScanning(true);
-    setCurrentText(""); 
-    setStatus("Scanning for QR code...");
-    
-    try {
-      const qrResult = await scanForQRCode(file);
-      if (qrResult) {
-        setCurrentText(qrResult);
-        setStatus("✅ QR Code detected! Review text below.");
-      } else {
-        setStatus("❌ No QR code found in this image.");
-      }
-    } catch (error) {
-      console.error(error);
-      setStatus("Error reading QR code.");
-    } finally {
-      setIsScanning(false);
-      event.target.value = null;
     }
   };
 
@@ -226,13 +233,11 @@ export default function App() {
       setStatus("Local queue is empty. No backup needed.");
       return;
     }
-    
     const excelData = offlineQueue.map(tag => ({
       "Scanned Text": tag.data,
       "Location Coordinates": tag.location || "N/A",
       "Date & Time": new Date(tag.timestamp).toLocaleString()
     }));
-
     const worksheet = XLSX.utils.json_to_sheet(excelData);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, "Local_Queue_Backup");
@@ -243,12 +248,10 @@ export default function App() {
   const downloadOverallReport = async () => {
     setIsMenuOpen(false);
     setStatus("Fetching overall report from cloud...");
-    
     if (!isOnline) {
       setStatus("Cannot download overall report while offline.");
       return;
     }
-
     const { data, error } = await supabase
       .from('spool_data')
       .select('*')
@@ -258,23 +261,46 @@ export default function App() {
       setStatus("Failed to fetch report or database is empty.");
       return;
     }
-
     const excelData = data.map(tag => ({
       "Scanned Text": tag.scanned_text,
       "Location Coordinates": tag.location || "N/A",
       "Date & Time": new Date(tag.created_at).toLocaleString()
     }));
-
     const worksheet = XLSX.utils.json_to_sheet(excelData);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, "Overall_Report");
     XLSX.writeFile(workbook, `LNT_Overall_Spool_Report_${Date.now()}.xlsx`);
-    
     setStatus("Overall report downloaded successfully.");
   };
 
   return (
     <div style={{ backgroundColor: '#121212', color: '#e0e0e0', minHeight: '100vh', padding: '20px', fontFamily: 'system-ui', boxSizing: 'border-box', display: 'flex', flexDirection: 'column' }}>
+      
+      {/* ========================================= */}
+      {/* LIVE FULL-SCREEN QR SCANNER OVERLAY       */}
+      {/* ========================================= */}
+      {showLiveQR && (
+        <div style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', backgroundColor: '#000', zIndex: 9999, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+          
+          {/* Top Bar with Close Button */}
+          <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', padding: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.6)', boxSizing: 'border-box', zIndex: 10 }}>
+            <h3 style={{ margin: 0, color: '#00E5FF' }}>Scan QR Code</h3>
+            <button onClick={() => setShowLiveQR(false)} style={{ background: 'none', border: 'none', color: '#ff5252', fontSize: '18px', fontWeight: 'bold', cursor: 'pointer' }}>✖ Close</button>
+          </div>
+          
+          {/* Live Video Feed */}
+          <video ref={videoRef} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+          <canvas ref={canvasRef} style={{ display: 'none' }} />
+          
+          {/* Payment App Scanner UI (Darkens rest of screen, highlights center box) */}
+          <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: '250px', height: '250px', border: '3px solid #00E5FF', borderRadius: '20px', boxShadow: '0 0 0 4000px rgba(0,0,0,0.65)', pointerEvents: 'none', zIndex: 5 }}></div>
+          <p style={{ position: 'absolute', bottom: '15%', color: '#00E5FF', fontWeight: 'bold', zIndex: 10 }}>Align QR Code inside the box</p>
+        </div>
+      )}
+
+      {/* ========================================= */}
+      {/* MAIN APP HOME SCREEN                        */}
+      {/* ========================================= */}
       <div style={{ maxWidth: '600px', margin: '0 auto', flex: 1, width: '100%', position: 'relative' }}>
         
         {/* HEADER AREA */}
@@ -316,12 +342,11 @@ export default function App() {
           </div>
         </div>
         
-        {/* === NEW DEDICATED QR BUTTON === */}
+        {/* === LIVE QR SCANNER BUTTON === */}
         <div style={{ marginBottom: '10px' }}>
-          <label style={{ width: '100%', backgroundColor: '#00E5FF', color: '#121212', padding: '15px 10px', borderRadius: '8px', display: 'flex', justifyContent: 'center', fontWeight: 'bold', cursor: 'pointer', opacity: isScanning ? 0.7 : 1, textAlign: 'center', boxShadow: '0 4px 6px rgba(0, 229, 255, 0.2)' }}>
-            {isScanning ? "⏳..." : "🔳 Scan QR Code"}
-            <input type="file" accept="image/*" capture="environment" onChange={handleQRCapture} disabled={isScanning} style={{ display: 'none' }} />
-          </label>
+          <button onClick={() => setShowLiveQR(true)} style={{ width: '100%', backgroundColor: '#00E5FF', color: '#121212', padding: '15px 10px', borderRadius: '8px', display: 'flex', justifyContent: 'center', fontWeight: 'bold', cursor: 'pointer', border: 'none', fontSize: '16px', boxShadow: '0 4px 6px rgba(0, 229, 255, 0.2)' }}>
+            🔳 Live QR Scanner
+          </button>
         </div>
 
         {/* OCR TEXT BUTTONS (CAMERA & GALLERY) */}
@@ -369,7 +394,6 @@ export default function App() {
           </div>
         )}
 
-        {/* FOOTER AREA */}
         <div style={{ marginTop: '40px', paddingTop: '20px', borderTop: '1px solid #333', textAlign: 'center', fontSize: '11px', color: '#555', letterSpacing: '0.5px' }}>
           developed by Digital Team, L&T, RIL NMD project
         </div>
