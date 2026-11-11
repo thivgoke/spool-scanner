@@ -27,7 +27,6 @@ export default function App() {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
 
-  // Network Listeners
   useEffect(() => {
     const handleOnline = () => setIsOnline(true);
     const handleOffline = () => setIsOnline(false);
@@ -47,7 +46,6 @@ export default function App() {
     };
   }, []);
 
-  // Offline Queue Storage
   useEffect(() => {
     localStorage.setItem('lnt_offline_queue', JSON.stringify(offlineQueue));
   }, [offlineQueue]);
@@ -58,7 +56,6 @@ export default function App() {
     let scanTimeoutId;
 
     if (showLiveQR) {
-      // Added constraints to cap resolution and encourage auto-focus
       navigator.mediaDevices.getUserMedia({ 
         video: { 
           facingMode: "environment",
@@ -83,21 +80,29 @@ export default function App() {
               ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
               
               const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-              
-              // FIX: "attemptBoth" solves the glare issue on printed paper
               const code = jsQR(imageData.data, imageData.width, imageData.height, { 
                 inversionAttempts: "attemptBoth" 
               });
 
-              if (code) {
-                setCurrentText(code.data);
-                setStatus("✅ QR Code scanned successfully!");
+              // FIX: When QR is found, properly halt the loop BEFORE updating state
+              if (code && code.data) {
+                clearTimeout(scanTimeoutId);
+                cancelAnimationFrame(animationFrameId);
+                
+                // Stop camera physically
+                if (videoRef.current && videoRef.current.srcObject) {
+                  videoRef.current.srcObject.getTracks().forEach(track => track.stop());
+                }
+
+                // Safely update UI
+                const cleanedText = code.data.trim();
+                setCurrentText(cleanedText);
+                setStatus("✅ QR Scanned successfully!");
                 setShowLiveQR(false); 
-                return; 
+                return; // End loop forever
               }
             }
             
-            // FIX: Throttle CPU usage to allow the camera lens to physically auto-focus
             scanTimeoutId = setTimeout(() => {
               animationFrameId = requestAnimationFrame(scanFrame);
             }, 150); 
@@ -112,6 +117,7 @@ export default function App() {
         });
     }
 
+    // Cleanup when user clicks "Close" manually
     return () => {
       if (animationFrameId) cancelAnimationFrame(animationFrameId);
       if (scanTimeoutId) clearTimeout(scanTimeoutId);
