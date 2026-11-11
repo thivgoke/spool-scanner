@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import * as XLSX from 'xlsx';
-import jsQR from 'jsqr';
+import { BrowserMultiFormatReader } from '@zxing/library';
 
 // Supabase Credentials
 const supabaseUrl = 'https://zvljpnbsauvkqsjbxkxq.supabase.co';
@@ -22,10 +22,10 @@ export default function App() {
   const [currentText, setCurrentText] = useState("");
   const [isOnline, setIsOnline] = useState(navigator.onLine);
 
-  // --- LIVE QR SCANNER STATES & REFS ---
+  // --- LIVE SCANNER STATES & REFS ---
   const [showLiveQR, setShowLiveQR] = useState(false);
   const videoRef = useRef(null);
-  const canvasRef = useRef(null);
+  const codeReader = useRef(new BrowserMultiFormatReader()); // NEW: ZXing Industrial Scanner
 
   useEffect(() => {
     const handleOnline = () => setIsOnline(true);
@@ -50,80 +50,33 @@ export default function App() {
     localStorage.setItem('lnt_offline_queue', JSON.stringify(offlineQueue));
   }, [offlineQueue]);
 
-  // --- OPTIMIZED LIVE QR SCANNER ENGINE ---
+  // --- DATA MATRIX & QR SCANNER ENGINE ---
   useEffect(() => {
-    let animationFrameId;
-    let scanTimeoutId;
-
-    if (showLiveQR) {
-      navigator.mediaDevices.getUserMedia({ 
-        video: { 
-          facingMode: "environment",
-          width: { ideal: 1080 },
-          advanced: [{ focusMode: "continuous" }]
-        } 
-      })
-        .then(stream => {
-          if (!videoRef.current) return;
-          videoRef.current.srcObject = stream;
-          videoRef.current.setAttribute("playsinline", true);
-          videoRef.current.play();
-          
-          const scanFrame = () => {
-            if (!videoRef.current || !canvasRef.current) return;
-            if (videoRef.current.readyState === videoRef.current.HAVE_ENOUGH_DATA) {
-              const canvas = canvasRef.current;
-              const video = videoRef.current;
-              canvas.width = video.videoWidth;
-              canvas.height = video.videoHeight;
-              const ctx = canvas.getContext("2d", { willReadFrequently: true });
-              ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-              
-              const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-              const code = jsQR(imageData.data, imageData.width, imageData.height, { 
-                inversionAttempts: "attemptBoth" 
-              });
-
-              // FIX: When QR is found, properly halt the loop BEFORE updating state
-              if (code && code.data) {
-                clearTimeout(scanTimeoutId);
-                cancelAnimationFrame(animationFrameId);
-                
-                // Stop camera physically
-                if (videoRef.current && videoRef.current.srcObject) {
-                  videoRef.current.srcObject.getTracks().forEach(track => track.stop());
-                }
-
-                // Safely update UI
-                const cleanedText = code.data.trim();
-                setCurrentText(cleanedText);
-                setStatus("✅ QR Scanned successfully!");
-                setShowLiveQR(false); 
-                return; // End loop forever
-              }
-            }
-            
-            scanTimeoutId = setTimeout(() => {
-              animationFrameId = requestAnimationFrame(scanFrame);
-            }, 150); 
-          };
-          
-          animationFrameId = requestAnimationFrame(scanFrame);
-        })
-        .catch(err => {
-          console.error(err);
-          setStatus("Camera access denied. Please allow permissions.");
-          setShowLiveQR(false);
-        });
+    if (showLiveQR && videoRef.current) {
+      // Start the camera and actively scan for Data Matrix, QR, and Barcodes
+      codeReader.current.decodeFromConstraints(
+        { video: { facingMode: "environment" } },
+        videoRef.current,
+        (result, err) => {
+          if (result) {
+            // Success! We found a code.
+            const cleanedText = result.getText().trim();
+            setCurrentText(cleanedText);
+            setStatus("✅ Code scanned successfully!");
+            setShowLiveQR(false); 
+          }
+          // Note: err fires every few milliseconds when a code isn't in the frame yet, so we ignore it.
+        }
+      ).catch((err) => {
+        console.error(err);
+        setStatus("Camera access denied or error starting scanner.");
+        setShowLiveQR(false);
+      });
     }
 
-    // Cleanup when user clicks "Close" manually
+    // Cleanup: Shut down the camera when the scanner is closed
     return () => {
-      if (animationFrameId) cancelAnimationFrame(animationFrameId);
-      if (scanTimeoutId) clearTimeout(scanTimeoutId);
-      if (videoRef.current && videoRef.current.srcObject) {
-        videoRef.current.srcObject.getTracks().forEach(track => track.stop());
-      }
+      codeReader.current.reset();
     };
   }, [showLiveQR]);
 
@@ -293,20 +246,19 @@ export default function App() {
   return (
     <div style={{ backgroundColor: '#121212', color: '#e0e0e0', minHeight: '100vh', padding: '20px', fontFamily: 'system-ui', boxSizing: 'border-box', display: 'flex', flexDirection: 'column' }}>
       
-      {/* LIVE QR SCANNER OVERLAY */}
+      {/* LIVE SCANNER OVERLAY */}
       {showLiveQR && (
         <div style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', backgroundColor: '#000', zIndex: 9999, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
           
           <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', padding: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.6)', boxSizing: 'border-box', zIndex: 10 }}>
-            <h3 style={{ margin: 0, color: '#00E5FF' }}>Scan QR Code</h3>
+            <h3 style={{ margin: 0, color: '#00E5FF' }}>Scan Barcode / QR</h3>
             <button onClick={() => setShowLiveQR(false)} style={{ background: 'none', border: 'none', color: '#ff5252', fontSize: '18px', fontWeight: 'bold', cursor: 'pointer' }}>✖ Close</button>
           </div>
           
           <video ref={videoRef} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-          <canvas ref={canvasRef} style={{ display: 'none' }} />
           
           <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: '250px', height: '250px', border: '3px solid #00E5FF', borderRadius: '20px', boxShadow: '0 0 0 4000px rgba(0,0,0,0.65)', pointerEvents: 'none', zIndex: 5 }}></div>
-          <p style={{ position: 'absolute', bottom: '15%', color: '#00E5FF', fontWeight: 'bold', zIndex: 10 }}>Align QR Code inside the box</p>
+          <p style={{ position: 'absolute', bottom: '15%', color: '#00E5FF', fontWeight: 'bold', zIndex: 10 }}>Align Data Matrix / QR Code inside the box</p>
         </div>
       )}
 
@@ -353,13 +305,13 @@ export default function App() {
         
         <div style={{ marginBottom: '10px' }}>
           <button onClick={() => setShowLiveQR(true)} style={{ width: '100%', backgroundColor: '#00E5FF', color: '#121212', padding: '15px 10px', borderRadius: '8px', display: 'flex', justifyContent: 'center', fontWeight: 'bold', cursor: 'pointer', border: 'none', fontSize: '16px', boxShadow: '0 4px 6px rgba(0, 229, 255, 0.2)' }}>
-            🔳 Live QR Scanner
+            🔳 Live Data Matrix / QR Scanner
           </button>
         </div>
 
         <div style={{ marginBottom: '20px', display: 'flex', gap: '10px' }}>
           <label style={{ flex: 1, backgroundColor: '#00E676', color: '#121212', padding: '15px 10px', borderRadius: '8px', display: 'flex', justifyContent: 'center', fontWeight: 'bold', cursor: 'pointer', opacity: isScanning ? 0.7 : 1, textAlign: 'center', boxShadow: '0 4px 6px rgba(0, 230, 118, 0.2)' }}>
-            {isScanning ? "⏳..." : "📷 OCR Camera"}
+            {isScanning ? "⏳..." : "📷 Metal Tag OCR"}
             <input type="file" accept="image/*" capture="environment" onChange={handleTextCapture} disabled={isScanning} style={{ display: 'none' }} />
           </label>
           
