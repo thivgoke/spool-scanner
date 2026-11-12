@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import * as XLSX from 'xlsx';
+import jsQR from 'jsqr';
 import { BrowserMultiFormatReader } from '@zxing/library';
 
 // Supabase Credentials
@@ -25,7 +26,8 @@ export default function App() {
   // --- LIVE SCANNER STATES & REFS ---
   const [showLiveQR, setShowLiveQR] = useState(false);
   const videoRef = useRef(null);
-  const codeReader = useRef(new BrowserMultiFormatReader()); // NEW: ZXing Industrial Scanner
+  const canvasRef = useRef(null);
+  const zxingReader = useRef(new BrowserMultiFormatReader());
 
   useEffect(() => {
     const handleOnline = () => setIsOnline(true);
@@ -50,33 +52,93 @@ export default function App() {
     localStorage.setItem('lnt_offline_queue', JSON.stringify(offlineQueue));
   }, [offlineQueue]);
 
-  // --- DATA MATRIX & QR SCANNER ENGINE ---
+  // --- HYBRID SCANNER ENGINE ---
   useEffect(() => {
-    if (showLiveQR && videoRef.current) {
-      // Start the camera and actively scan for Data Matrix, QR, and Barcodes
-      codeReader.current.decodeFromConstraints(
-        { video: { facingMode: "environment" } },
-        videoRef.current,
-        (result, err) => {
-          if (result) {
-            // Success! We found a code.
-            const cleanedText = result.getText().trim();
-            setCurrentText(cleanedText);
-            setStatus("✅ Code scanned successfully!");
-            setShowLiveQR(false); 
-          }
-          // Note: err fires every few milliseconds when a code isn't in the frame yet, so we ignore it.
-        }
-      ).catch((err) => {
-        console.error(err);
-        setStatus("Camera access denied or error starting scanner.");
-        setShowLiveQR(false);
-      });
+    let animationFrameId;
+    let scanTimeoutId;
+
+    if (showLiveQR) {
+      navigator.mediaDevices.getUserMedia({ 
+        video: { 
+          facingMode: "environment",
+          width: { ideal: 1080 },
+          advanced: [{ focusMode: "continuous" }]
+        } 
+      })
+        .then(stream => {
+          if (!videoRef.current) return;
+          videoRef.current.srcObject = stream;
+          videoRef.current.setAttribute("playsinline", true);
+          videoRef.current.play();
+          
+          const scanFrame = () => {
+            if (!videoRef.current || !canvasRef.current) return;
+            if (videoRef.current.readyState === videoRef.current.HAVE_ENOUGH_DATA) {
+              const canvas = canvasRef.current;
+              const video = videoRef.current;
+              canvas.width = video.videoWidth;
+              canvas.height = video.videoHeight;
+              const ctx = canvas.getContext("2d", { willReadFrequently: true });
+              ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+              
+              let foundText = null;
+
+              // 1. Try jsQR (Fastest for standard 3-dot QRs)
+              const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+              const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: "attemptBoth" });
+              if (code && code.data) {
+                foundText = code.data;
+              }
+
+              // 2. Try ZXing (For Data Matrix & Industrial Barcodes)
+              if (!foundText) {
+                try {
+                  const zxResult = zxingReader.current.decodeFromCanvas(canvas);
+                  if (zxResult && zxResult.getText()) {
+                    foundText = zxResult.getText();
+                  }
+                } catch (err) {
+                  // ZXing throws an expected error when no code is visible. Ignore it.
+                }
+              }
+
+              // 3. Process Success
+              if (foundText) {
+                clearTimeout(scanTimeoutId);
+                cancelAnimationFrame(animationFrameId);
+                
+                if (videoRef.current && videoRef.current.srcObject) {
+                  videoRef.current.srcObject.getTracks().forEach(track => track.stop());
+                }
+
+                setCurrentText(foundText.trim());
+                setStatus("✅ Code Scanned successfully!");
+                setShowLiveQR(false); 
+                return; 
+              }
+            }
+            
+            // Throttle to let camera auto-focus (fixes the blur issue)
+            scanTimeoutId = setTimeout(() => {
+              animationFrameId = requestAnimationFrame(scanFrame);
+            }, 150); 
+          };
+          
+          animationFrameId = requestAnimationFrame(scanFrame);
+        })
+        .catch(err => {
+          console.error(err);
+          setStatus("Camera access denied. Please allow permissions.");
+          setShowLiveQR(false);
+        });
     }
 
-    // Cleanup: Shut down the camera when the scanner is closed
     return () => {
-      codeReader.current.reset();
+      if (animationFrameId) cancelAnimationFrame(animationFrameId);
+      if (scanTimeoutId) clearTimeout(scanTimeoutId);
+      if (videoRef.current && videoRef.current.srcObject) {
+        videoRef.current.srcObject.getTracks().forEach(track => track.stop());
+      }
     };
   }, [showLiveQR]);
 
@@ -256,6 +318,7 @@ export default function App() {
           </div>
           
           <video ref={videoRef} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+          <canvas ref={canvasRef} style={{ display: 'none' }} />
           
           <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: '250px', height: '250px', border: '3px solid #00E5FF', borderRadius: '20px', boxShadow: '0 0 0 4000px rgba(0,0,0,0.65)', pointerEvents: 'none', zIndex: 5 }}></div>
           <p style={{ position: 'absolute', bottom: '15%', color: '#00E5FF', fontWeight: 'bold', zIndex: 10 }}>Align Data Matrix / QR Code inside the box</p>
